@@ -1,0 +1,299 @@
+public with sharing class BrazeTransactionEmail {
+    public static String canvasURI = '/canvas/trigger/send';
+    public static String userTrack = '/users/track';
+    public static Boolean isDebug = false;
+
+  /**
+   * Parameters to trigger Braze Canvas
+   */
+    public class BrazeTransactionEmailParameters {
+    @InvocableVariable(required = true)
+    public String instanceKey;
+    @InvocableVariable(required = true)
+    public String canvasId;
+    @InvocableVariable(required = true)
+    public String baseURI;
+    @invocableVariable(required = true)
+    public String taskId;
+    @invocableVariable(required = true)
+    public String AdminAccountEmail;
+    @invocableVariable(required = true)
+    public String userUrl;        
+    @InvocableVariable
+    public String isDebug;
+    }
+  
+  /**
+   * Braze payload for canvas trigger
+   * @see https://www.braze.com/docs/developer_guide/rest_api/messaging/#sending-messages-via-api-triggered-delivery
+   */
+    public class BrazeCanvasObject {
+        String api_key;
+        String canvas_id;
+        BrazeRecipient[] recipients;
+        // Constructor
+        public BrazeCanvasObject(String api_key, String canvas_id, BrazeRecipient[] recipients) {
+          this.api_key = api_key;
+          this.canvas_id = canvas_id;
+          this.recipients = recipients;
+        }
+    }
+
+    /**
+    * Contruct Recipients for braze
+    * @see https://www.braze.com/docs/developer_guide/rest_api/messaging/#recipient-object
+    */
+    public class BrazeRecipient {
+        String external_user_id;
+        BrazerecipientCanvasEntryProperties canvas_entry_properties;
+        // Constructor
+        public BrazeRecipient(String external_user_id, BrazerecipientCanvasEntryProperties canvas_entry_properties) {
+          this.external_user_id = external_user_id;
+          this.canvas_entry_properties = canvas_entry_properties;
+        }
+    }
+
+  /**
+   * Construct canvas entry properties
+   * @see https://www.braze.com/docs/developer_guide/rest_api/messaging/#canvas-entry-properties
+   */
+  public class BrazerecipientCanvasEntryProperties {
+    String taskid;
+    String account_number;
+    String contact_id;
+    String user_username;
+    String csat_nickname;
+    String user_id;
+    String agent_actual_name;
+    String case_id;
+    // Constructor
+    public BrazerecipientCanvasEntryProperties(
+      String taskid,
+      String account_number,
+      String contact_id,
+      String user_username,
+      String csat_nickname,
+      String user_id,
+      String agent_actual_name,
+      String case_id
+    ) {
+      this.taskid = taskid;
+      this.account_number = account_number;
+      this.contact_id = contact_id;
+      this.user_username = user_username;
+      this.csat_nickname = csat_nickname;
+      this.user_id = user_id;
+      this.agent_actual_name = agent_actual_name;
+      this.case_id = case_id;
+    }
+    public string getAccountId()
+    {
+        return this.account_number;
+    }
+  }
+    
+    public class JSON2Apex {
+        public UserObj data;
+        public Long timestamp;
+        public String status;
+        public Integer code;
+        public String version; 
+        public JSON2Apex parse(String json) {
+            return (JSON2Apex) System.JSON.deserialize(json, JSON2Apex.class);
+        }
+    }
+
+    public class UserObj {
+        Boolean status;
+        String userId;
+        public UserObj(String userId, Boolean status) {
+            this.userId = userId;
+            this.status = status;
+        }
+    }    
+    
+   
+  /**
+   * Class to execute HTTP api calls
+   */
+  public class QueueableBrazeCall implements System.Queueable, Database.AllowsCallouts {
+    private final String url;
+    private final String method;
+    private final String body;
+    public final Boolean isDebug = false;
+    // constructor 
+    public QueueableBrazeCall(String url, String method, String body) {
+      this.url = url;
+      this.method = method;
+      this.body = body;
+    }
+
+    public void execute(System.QueueableContext ctx) {
+      HttpRequest req = new HttpRequest();
+      HttpResponse res = new HttpResponse();
+      req.setEndpoint(url);
+      req.setHeader('Content-Type', 'application/json');
+      req.setMethod(method);
+      req.setTimeout(6000);
+      req.setBody(body);
+      Http http = new Http();
+      if (!Test.isRunningTest()) {
+        try {
+          res = http.send(req);
+        } catch(System.CalloutException e) {
+            // Start debug
+            System.debug('Callout error: ' + e);
+            System.debug('Callout error message: ' + res.toString());
+        }                
+      }
+    }        
+  }
+    @future(callout=true) 
+    public static void apexBrazeCallout(String taskId, String userUrl, String brazeURI, String instanceKey, String canvasId, string adminAccountEmail) {
+       try {
+            // start createing Object for making api call
+            BrazerecipientCanvasEntryProperties brcep = getRecordById(taskId);
+            BrazeRecipient[] recipientList = new BrazeRecipient[1];
+            String userIdToTrigger = getUserId(userUrl, adminAccountEmail, instanceKey);
+            recipientList[0] = new BrazeRecipient(userIdToTrigger, brcep);
+            BrazeCanvasObject bco = new BrazeCanvasObject(instanceKey, canvasId, recipientList);
+            String body = JSON.serialize(bco);
+            // Queue the Job
+            System.enqueueJob(new QueueableBrazeCall(brazeURI, 'POST', body));          
+        } catch (NullPointerException npe) {
+            System.debug(LoggingLevel.DEBUG, npe.getMessage());
+        }           
+    }
+  
+    @InvocableMethod(label='trigger canvas for user' description='pass the canvas id and list of user object with canvas entry properties')
+    public static void triggerBraze(BrazeTransactionEmailParameters[] brazeTransactionEmailParameters) {
+        try {
+            BrazeTransactionEmailParameters p = brazeTransactionEmailParameters[0];
+            // if user want to debug this call
+            if (p.isDebug == 'true') {
+                isDebug = true;
+            }
+            // Start debug
+            if (isDebug == true) {
+                System.debug('BrazeTransactionEmailParameters: '+ p);
+            }
+            // End debug
+            // Fetch all the vars
+            String brazeURI = p.baseURI + canvasURI;
+            String userUrl = p.userUrl;
+            String instanceKey = p.instanceKey;
+            String canvasId = p.canvasId;
+            String adminAccountEmail = p.AdminAccountEmail;
+            String taskid = p.taskId;
+			    // Schedule api call to braze
+			    apexBrazeCallout(taskId, userUrl, brazeURI, instanceKey, canvasId, adminAccountEmail);
+        } catch (NullPointerException npe) {
+            System.debug(LoggingLevel.DEBUG, npe.getMessage());
+        }
+    }
+    
+    public static String getUserId(String userUrl, String adminAccountEmail, String instanceKey) {
+        String method = 'GET';
+        String cId;
+        String userUri = userUrl + '?adminAccountEmail=' + adminAccountEmail + '&adminValidToken=' + instanceKey;        
+        HttpRequest req = new HttpRequest();
+        HttpResponse res = new HttpResponse();
+        req.setEndpoint(userUri);
+        req.setHeader('Content-Type', 'application/json');
+        req.setMethod(method);
+        req.setTimeout(6000);
+        Http http = new Http();
+        if (!Test.isRunningTest()) {
+            try {
+                res = http.send(req);
+                Integer statusCode = res.getStatusCode();
+                JSON2Apex j2a = new JSON2Apex();               
+                JSON2Apex values = j2a.parse(res.getBody());
+                UserObj usrObj = values.data;
+                cId = usrObj.userId; 
+                // Start debug
+            } catch(System.CalloutException e) {
+                // Start debug
+                System.debug('Callout error: ' + e);
+                System.debug('Callout error message: ' + res.toString());
+            }                
+        }      
+		    if (cId == null) {
+			    throw new CalloutException('userId is null');
+		    }
+        return cId;
+    }   
+    
+    /**
+     * Method to fetch Task from the database 
+     **/
+    public static BrazerecipientCanvasEntryProperties getRecordById(String taskId) {
+        String account_number = '';
+        String contact_id = '';
+        String user_username = '';
+        String csat_nickname = '';
+        String user_id = '';
+        String agent_actual_name = '';
+        String case_id = '';
+        String getQuotes = 'a4r';
+        String contactIdStr = '003';
+        String caseIdStr = '005';
+        BrazerecipientCanvasEntryProperties brcep;
+        try {
+            for (Task t : [SELECT Id, AccountId, WhatId , Current_User_Name__c, NickName__c, Current_User_ID__c FROM Task WHERE Id = :taskId]) {
+              account_number = t.AccountId;
+              if (t.WhatId == null) {
+                  throw new CalloutException('WhatId is null');
+              }
+              String whatId = t.WhatId;
+              // check if this task is related to contact    
+              if (compareString(whatId, contactIdStr, 3)) {
+                  contact_id = whatId;
+              }
+              // check if this task is related to a case
+              if (compareString(whatId, caseIdStr, 3)) {
+                  case_id = whatId;
+              }
+              user_username = t.Current_User_Name__c;
+              csat_nickname = t.NickName__c;
+              user_id = t.Current_User_ID__c;
+              agent_actual_name = t.Current_User_Name__c;
+            } 
+            brcep = new BrazerecipientCanvasEntryProperties(
+                taskId,
+                account_number,
+                contact_id,
+                user_username,
+                csat_nickname,
+                user_id,
+                agent_actual_name,
+                case_id
+            );
+        } 
+        catch(QueryException e) {
+            system.debug('QueryException');
+            system.debug(e);
+        }
+        catch(NoDataFoundException e){
+            system.debug('NoDataFoundException');
+            system.debug(e);
+        }
+        catch(NullPointerException e){
+            system.debug('NullPointerException');
+            system.debug(e);
+        }
+        catch(Exception ex){
+            system.debug('Exception');
+            system.debug(ex);
+        }
+        return brcep;           
+    }
+    
+    /**
+     * Compare the strings
+     **/
+    public static boolean compareString(String itemOne, String itemTwo, Integer NoOfChar) {
+        Integer start = 0;
+        return (itemOne.substring(start, NoOfChar) == itemTwo.substring(start, NoOfChar));
+    }
+}
